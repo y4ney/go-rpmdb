@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"golang.org/x/xerrors"
 	"log"
+	"path/filepath"
 
 	multierror "github.com/hashicorp/go-multierror"
 	rpmdb "github.com/knqyf263/go-rpmdb/pkg"
@@ -17,6 +19,7 @@ func main() {
 }
 
 func run() error {
+	var files []string
 	db, err := detectDB()
 	if err != nil {
 		return err
@@ -28,18 +31,17 @@ func run() error {
 
 	fmt.Println("Packages:")
 	for _, pkg := range pkgList {
-		// Suppress output
-		pkg.BaseNames = nil
-		pkg.DirIndexes = nil
-		pkg.DirNames = nil
-		pkg.FileSizes = nil
-		pkg.FileDigests = nil
-		pkg.FileModes = nil
-		pkg.FileFlags = nil
-		pkg.UserNames = nil
-		pkg.GroupNames = nil
+		fmt.Println(pkg.Name)
+		files, err = pkg.InstalledFileNames()
+		if err != nil {
+			return xerrors.Errorf("failed to get installed file names:%w", err)
+		}
+		fmt.Println("Installed File:")
+		for _, file := range files {
+			fmt.Println(filepath.ToSlash(file))
+		}
+		fmt.Println()
 
-		fmt.Printf("\t%+v\n", *pkg)
 	}
 	fmt.Printf("[Total Packages: %d]\n", len(pkgList))
 
@@ -48,19 +50,7 @@ func run() error {
 
 func detectDB() (*rpmdb.RpmDB, error) {
 	var result error
-	db, err := rpmdb.Open("./rpmdb.sqlite")
-	if err == nil {
-		return db, nil
-	}
-	result = multierror.Append(result, err)
-
-	db, err = rpmdb.Open("./Packages.db")
-	if err == nil {
-		return db, nil
-	}
-	result = multierror.Append(result, err)
-
-	db, err = rpmdb.Open("./Packages")
+	db, err := rpmdb.Open("cmd/rpmdb/Packages")
 	if err == nil {
 		return db, nil
 	}

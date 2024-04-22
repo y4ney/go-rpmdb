@@ -6,6 +6,6 @@ type Entry struct {
 }
 
 type RpmDBInterface interface {
-	Read() <-chan Entry
+	Read() []Entry
 	Close() error
 }

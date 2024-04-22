@@ -61,90 +61,68 @@ func (db *BerkeleyDB) Close() error {
 	return db.file.Close()
 }
 
-func (db *BerkeleyDB) Read() <-chan dbi.Entry {
-	entries := make(chan dbi.Entry)
+func (db *BerkeleyDB) Read() []dbi.Entry {
+	var (
+		entries []dbi.Entry
+	)
 
-	go func() {
-		defer close(entries)
+	for pageNum := uint32(0); pageNum <= db.HashMetadata.LastPageNo; pageNum++ {
+		pageData, err := slice(db.file, int(db.HashMetadata.PageSize))
+		if err != nil {
+			return []dbi.Entry{{Err: err}}
+		}
 
-		for pageNum := uint32(0); pageNum <= db.HashMetadata.LastPageNo; pageNum++ {
-			pageData, err := slice(db.file, int(db.HashMetadata.PageSize))
-			if err != nil {
-				entries <- dbi.Entry{
-					Err: err,
-				}
-				return
-			}
+		// keep track of the start of the next page for the next iteration...
+		endOfPageOffset, err := db.file.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return []dbi.Entry{{Err: err}}
+		}
 
-			// keep track of the start of the next page for the next iteration...
-			endOfPageOffset, err := db.file.Seek(0, io.SeekCurrent)
-			if err != nil {
-				entries <- dbi.Entry{
-					Err: err,
-				}
-				return
-			}
+		hashPageHeader, err := ParseHashPage(pageData, db.HashMetadata.Swapped)
+		if err != nil {
+			return []dbi.Entry{{Err: err}}
+		}
 
-			hashPageHeader, err := ParseHashPage(pageData, db.HashMetadata.Swapped)
-			if err != nil {
-				entries <- dbi.Entry{
-					Err: err,
-				}
-				return
-			}
+		if hashPageHeader.PageType != HashUnsortedPageType && // for RHEL/CentOS 5
+			hashPageHeader.PageType != HashPageType {
+			// skip over pages that do not have hash values
+			continue
+		}
 
-			if hashPageHeader.PageType != HashUnsortedPageType && // for RHEL/CentOS 5
-				hashPageHeader.PageType != HashPageType {
-				// skip over pages that do not have hash values
+		hashPageIndexes, err := HashPageValueIndexes(pageData, hashPageHeader.NumEntries, db.HashMetadata.Swapped)
+		if err != nil {
+			return []dbi.Entry{{Err: err}}
+		}
+
+		for _, hashPageIndex := range hashPageIndexes {
+			// the first byte is the page type, so we can peek at it first before parsing further...
+			valuePageType := pageData[hashPageIndex]
+
+			// Only Overflow pages contain package data, skip anything else.
+			if valuePageType != HashOffIndexPageType {
 				continue
 			}
 
-			hashPageIndexes, err := HashPageValueIndexes(pageData, hashPageHeader.NumEntries, db.HashMetadata.Swapped)
+			// Traverse the page to concatenate the data that may span multiple pages.
+			valueContent, err := HashPageValueContent(
+				db.file,
+				pageData,
+				hashPageIndex,
+				db.HashMetadata.PageSize,
+				db.HashMetadata.Swapped,
+			)
 			if err != nil {
-				entries <- dbi.Entry{
-					Err: err,
-				}
-				return
+				return []dbi.Entry{{Err: err}}
 			}
-
-			for _, hashPageIndex := range hashPageIndexes {
-				// the first byte is the page type, so we can peek at it first before parsing further...
-				valuePageType := pageData[hashPageIndex]
-
-				// Only Overflow pages contain package data, skip anything else.
-				if valuePageType != HashOffIndexPageType {
-					continue
-				}
-
-				// Traverse the page to concatenate the data that may span multiple pages.
-				valueContent, err := HashPageValueContent(
-					db.file,
-					pageData,
-					hashPageIndex,
-					db.HashMetadata.PageSize,
-					db.HashMetadata.Swapped,
-				)
-
-				entries <- dbi.Entry{
-					Value: valueContent,
-					Err:   err,
-				}
-
-				if err != nil {
-					return
-				}
-			}
-
-			// go back to the start of the next page for reading...
-			_, err = db.file.Seek(endOfPageOffset, io.SeekStart)
-			if err != nil {
-				entries <- dbi.Entry{
-					Err: err,
-				}
-				return
-			}
+			entries = append(entries, dbi.Entry{Value: valueContent})
 		}
-	}()
+
+		// go back to the start of the next page for reading...
+		_, err = db.file.Seek(endOfPageOffset, io.SeekStart)
+		if err != nil {
+			return []dbi.Entry{{Err: err}}
+		}
+	}
 
 	return entries
 }
